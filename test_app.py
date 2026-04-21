@@ -8,11 +8,12 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 
-app = Flask(__name__)
-
+# Load environment variables
 load_dotenv()
 
-# Load embedding
+app = Flask(__name__)
+
+# Load embeddings
 embedding = download_hugging_face_embeddings()
 
 # Load Pinecone index
@@ -21,6 +22,7 @@ docsearch = PineconeVectorStore.from_existing_index(
     embedding=embedding
 )
 
+# Retriever
 retriever = docsearch.as_retriever(search_kwargs={"k": 5})
 
 # Groq LLM
@@ -29,11 +31,19 @@ chatModel = ChatGroq(
     model_name="llama-3.1-8b-instant"
 )
 
-# Prompt
+# Improved Prompt
 system_prompt = (
-    "Answer ONLY from the provided context. "
-    "If the answer is not in the context, say 'I don't know'. "
-    "Be concise.\n\n{context}"
+    "You are a medical assistant chatbot.\n"
+    "Use ONLY the provided context to answer the question.\n"
+    "If the answer is not in the context, say 'I don't know'.\n\n"
+    
+    "Instructions:\n"
+    "- Give clear and structured answers\n"
+    "- Explain in simple terms\n"
+    "- Include symptoms, causes, and treatment if relevant\n"
+    "- Do NOT make up information\n\n"
+    
+    "Context:\n{context}"
 )
 
 prompt = ChatPromptTemplate.from_messages([
@@ -41,30 +51,42 @@ prompt = ChatPromptTemplate.from_messages([
     ("human", "{input}")
 ])
 
+# Format retrieved docs
 def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+    return "\n\n".join(
+        f"Source: {d.metadata.get('source')}\n{d.page_content}"
+        for d in docs
+    )
 
+# RAG pipeline
 rag_chain = (
     {"context": retriever | format_docs, "input": RunnablePassthrough()}
     | prompt
     | chatModel
 )
 
+# Routes
 @app.route("/")
 def index():
     return render_template("chat.html")
+
 
 @app.route("/get", methods=["POST"])
 def chat():
     msg = request.form["msg"].strip()
     msg_lower = msg.lower()
 
-    if msg_lower in ["hi", "hello", "hey"]:
+    # Handle greetings
+    if any(greet in msg_lower for greet in ["hi", "hello", "hey"]):
         return "Hello! Ask me any medical question."
 
+    # Generate response
     response = rag_chain.invoke(msg)
     return str(response.content)
 
+
+# Render-compatible run
 if __name__ == "__main__":
-    print("🚀 Chatbot running...")
-    app.run(port=8080)
+    port = int(os.environ.get("PORT", 8080))
+    print(f"🚀 Chatbot running on port {port}")
+    app.run(host="0.0.0.0", port=port)
